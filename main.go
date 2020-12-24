@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"golang.org/x/mod/module"
+	"k0s.io/k0s/pkg/tunnel/listener"
 )
 
 var (
@@ -25,7 +26,7 @@ var (
 	ttl      = flag.Duration("ttl", 3*time.Minute, "get mod timeout duration")
 )
 
-func init() {
+func _init() {
 	list := filepath.SplitList(os.Getenv("GOPATH"))
 	if len(list) == 0 || list[0] == "" {
 		log.Fatal("missing $GOPATH")
@@ -50,55 +51,58 @@ func init() {
 			}
 		}
 	}
+	flag.Parse()
+}
+
+func goproxyHandler(w http.ResponseWriter, r *http.Request) {
+	log.Println(r.Method, r.RequestURI)
+	if r.Method != http.MethodGet {
+		http.NotFound(w, r)
+		return
+	}
+
+	path := r.URL.Path[len("/"):]
+	i := strings.Index(path, "/@v/")
+	if i < 0 {
+		http.NotFound(w, r)
+		return
+	}
+
+	enc, file := path[:i], path[i+len("/@v/"):]
+	mod, err := module.UnescapePath(enc)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+
+	if file == "list" {
+		serveMod(w, r, mod, "", "list")
+		return
+	}
+
+	i = strings.LastIndex(file, ".")
+	if i < 0 {
+		http.NotFound(w, r)
+		return
+	}
+
+	encVers, ext := file[:i], file[i:]
+	vers, err := module.UnescapeVersion(encVers)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+
+	if ext != ".info" && ext != ".mod" && ext != ".zip" {
+		http.NotFound(w, r)
+		return
+	}
+	serveMod(w, r, mod, vers, ext)
 }
 
 func main() {
-	flag.Parse()
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			http.NotFound(w, r)
-			return
-		}
-
-		path := r.URL.Path[len("/"):]
-		i := strings.Index(path, "/@v/")
-		if i < 0 {
-			http.NotFound(w, r)
-			return
-		}
-
-		enc, file := path[:i], path[i+len("/@v/"):]
-		mod, err := module.UnescapePath(enc)
-		if err != nil {
-			http.NotFound(w, r)
-			return
-		}
-
-		if file == "list" {
-			serveMod(w, r, mod, "", "list")
-			return
-		}
-
-		i = strings.LastIndex(file, ".")
-		if i < 0 {
-			http.NotFound(w, r)
-			return
-		}
-
-		encVers, ext := file[:i], file[i:]
-		vers, err := module.UnescapeVersion(encVers)
-		if err != nil {
-			http.NotFound(w, r)
-			return
-		}
-
-		if ext != ".info" && ext != ".mod" && ext != ".zip" {
-			http.NotFound(w, r)
-			return
-		}
-		serveMod(w, r, mod, vers, ext)
-	})
-	log.Fatal(http.ListenAndServe(*addr, nil))
+	_init()
+	log.Fatal(http.Serve(listener.Listener(*addr, "/"), http.HandlerFunc(goproxyHandler)))
 }
 
 func serveMod(w http.ResponseWriter, r *http.Request, mod, ver, ext string) {
